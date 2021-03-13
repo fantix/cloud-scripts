@@ -260,6 +260,8 @@ jobs:
 
   setup-aws-rds:
     runs-on: ubuntu-latest
+    outputs:
+      pghost: ${{ steps.pghost.outputs.stdout }}
 
     steps:
       - uses: actions/checkout@v2
@@ -294,13 +296,16 @@ jobs:
           path: aws-rds/terraform.tfstate
           retention-days: 1
 
+      - name: Get RDS host
+        id: pghost
+        working-directory: aws-rds
+        run: |
+          terraform output -raw db_instance_address
+
   test-aws-rds:
     runs-on: ubuntu-latest
     needs: [build, setup-aws-rds]
     steps:
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v1
-
       - uses: actions/checkout@v2
         with:
           repository: fantix/edgedb
@@ -407,30 +412,9 @@ jobs:
 
       # Run the test
 
-      - name: Restore Terraform state
-        uses: actions/download-artifact@v2
-        with:
-          name: aws-rds-tfstate
-          path: aws-rds
-
-      - name: Calculate Postgres DSN
-        shell: python
-        env:
-          PGPASS: ${{ secrets.AWS_RDS_PASSWORD }}
-        run: |
-          import os
-          import subprocess
-          pgpass = os.environ['PGPASS']
-          pghost = subprocess.check_output(
-              ['terraform', '-chdir=aws-rds', 'output', '-raw', 'db_instance_address'],
-              text=True,
-          )
-          pghost = pghost.split('::')[0].split('\n')[-1].strip()
-          dsn = f"EDGEDB_POSTGRES_DSN=postgres://edbtest:{pgpass}@{pghost}/postgres"
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              print(dsn, file=f)
-
       - name: Test
+        env:
+          EDGEDB_POSTGRES_DSN: postgres://edbtest:${{ secrets.AWS_RDS_PASSWORD }}@${{ needs.setup-aws-rds.outputs.pghost }}/postgres
         run: |
           edb server --bootstrap-only --postgres-dsn=$EDGEDB_POSTGRES_DSN
           edb test -j2 -v
